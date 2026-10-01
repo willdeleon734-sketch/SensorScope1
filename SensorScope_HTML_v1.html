@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Sensor Scope</title>
+<style>
+:root{color-scheme:dark;--bg:#05090d;--panel:#0c151c;--line:#233640;--txt:#e9f7ff;--mut:#91a9b5;--accent:#56e0ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,Arial,sans-serif}
+header{position:sticky;top:0;z-index:5;padding:14px 16px;background:#071017eF;border-bottom:1px solid var(--line)}
+h1{font-size:20px;margin:0}.sub{font-size:12px;color:var(--mut)}
+main{padding:12px;max-width:900px;margin:auto}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:650px){.grid{grid-template-columns:1fr}}
+canvas,video{width:100%;border-radius:12px;background:#000;display:block}
+button,select,input{font:inherit}button{background:#102a35;color:white;border:1px solid #31515e;border-radius:12px;padding:11px 14px;margin:4px}
+button.primary{background:#0e5368}.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.metric{font-family:ui-monospace,monospace;font-size:14px}
+small{color:var(--mut)}label{font-size:13px;color:var(--mut)}input[type=range]{width:180px}
+#scope{height:150px}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:5px 9px;margin:3px;font-size:12px}
+</style>
+</head>
+<body>
+<header><h1>Sensor Scope</h1><div class="sub">Laboratório óptico no navegador • sinal digital da câmera</div></header>
+<main>
+<div class="card">
+ <div class="row">
+  <button class="primary" id="start">▶ Iniciar câmera</button>
+  <button id="flip">↺ Trocar câmera</button>
+  <button id="csv">Exportar CSV</button>
+ </div>
+ <div id="status"><small>Aguardando permissão da câmera.</small></div>
+</div>
+
+<div class="grid">
+ <div class="card"><b>Preview</b><video id="video" playsinline autoplay muted></video><small>Toque no mapa ao lado/abaixo para escolher o ponto de medição.</small></div>
+ <div class="card"><b>Mapa de intensidade</b><canvas id="map" width="320" height="240"></canvas>
+  <div class="row"><label>Ganho visual <input id="gain" type="range" min="1" max="5" step=".1" value="1"></label></div>
+ </div>
+</div>
+
+<div class="card">
+ <div class="row">
+  <span class="pill">X: <b id="px">160</b></span><span class="pill">Y: <b id="py">120</b></span>
+  <span class="pill">Y/luma: <b id="lum">—</b></span>
+  <span class="pill">R: <b id="rv">—</b></span><span class="pill">G: <b id="gv">—</b></span><span class="pill">B: <b id="bv">—</b></span>
+  <span class="pill">FPS análise: <b id="fps">—</b></span>
+ </div>
+ <canvas id="scope" width="800" height="150"></canvas>
+ <small>Gráfico temporal da luminância no ponto selecionado. Valores 0–255.</small>
+</div>
+
+<div class="card">
+ <b>Capacidades disponíveis nesta camada</b>
+ <div id="caps" class="metric">Camera API: navegador / getUserMedia<br>RAW_SENSOR: indisponível via HTML<br>YUV_420_888: indisponível diretamente via HTML<br>Saída analisada: pixels RGBA do frame decodificado</div>
+ <p><small>Este modo não lê tensão ou elétrons diretamente do fotodiodo. Ele mede os pixels que o navegador entrega depois da cadeia de captura. Para RAW_SENSOR/Camera2 é necessário APK nativo.</small></p>
+</div>
+
+<canvas id="work" width="320" height="240" hidden></canvas>
+</main>
+<script>
+const v=document.querySelector('#video'), work=document.querySelector('#work'), wc=work.getContext('2d',{willReadFrequently:true});
+const map=document.querySelector('#map'), mc=map.getContext('2d'), scope=document.querySelector('#scope'), sc=scope.getContext('2d');
+let stream=null, facing='environment', sx=160,sy=120, hist=[], rows=[['timestamp','x','y','r','g','b','luma']], last=performance.now(), frames=0;
+
+async function start(){
+ try{
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}},audio:false});
+  v.srcObject=stream; await v.play();
+  const t=stream.getVideoTracks()[0], s=t.getSettings(), c=t.getCapabilities?t.getCapabilities():{};
+  document.querySelector('#status').innerHTML='<small>Câmera ativa: '+(s.width||'?')+'×'+(s.height||'?')+'</small>';
+  document.querySelector('#caps').innerHTML=
+   'Camera API: MediaDevices/getUserMedia<br>'+
+   'Resolução recebida: '+(s.width||'?')+' × '+(s.height||'?')+'<br>'+
+   'Facing mode: '+(s.facingMode||facing)+'<br>'+
+   'RAW_SENSOR: não exposto pelo navegador<br>YUV_420_888: não exposto diretamente pelo navegador<br>'+
+   'Controles reportados: '+Object.keys(c).join(', ');
+ }catch(e){document.querySelector('#status').textContent='Erro: '+e.message}
+}
+document.querySelector('#start').onclick=start;
+document.querySelector('#flip').onclick=()=>{facing=facing==='environment'?'user':'environment';start()};
+map.onclick=e=>{const r=map.getBoundingClientRect();sx=Math.max(0,Math.min(319,Math.floor((e.clientX-r.left)/r.width*320)));sy=Math.max(0,Math.min(239,Math.floor((e.clientY-r.top)/r.height*240)));};
+
+function drawScope(){
+ sc.clearRect(0,0,scope.width,scope.height); sc.strokeStyle='#263943';sc.beginPath();
+ for(let y=0;y<=255;y+=64){let yy=scope.height-y/255*scope.height;sc.moveTo(0,yy);sc.lineTo(scope.width,yy)}sc.stroke();
+ if(hist.length<2)return; sc.strokeStyle='#56e0ff';sc.lineWidth=2;sc.beginPath();
+ hist.forEach((q,i)=>{let x=i/(hist.length-1)*scope.width,y=scope.height-q/255*scope.height;i?sc.lineTo(x,y):sc.moveTo(x,y)});sc.stroke();
+}
+function loop(){
+ requestAnimationFrame(loop); if(!stream||v.readyState<2)return;
+ frames++; let now=performance.now(); if(now-last<80)return;
+ let dt=now-last;last=now;document.querySelector('#fps').textContent=(1000/dt).toFixed(1);
+ wc.drawImage(v,0,0,320,240); let im=wc.getImageData(0,0,320,240), d=im.data, gain=+document.querySelector('#gain').value;
+ let out=mc.createImageData(320,240), od=out.data;
+ for(let i=0;i<d.length;i+=4){let y=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2];let z=Math.min(255,y*gain);od[i]=od[i+1]=od[i+2]=z;od[i+3]=255}
+ mc.putImageData(out,0,0); mc.strokeStyle='#ff3b3b';mc.lineWidth=2;mc.strokeRect(sx-5,sy-5,10,10);
+ let k=(sy*320+sx)*4,r=d[k],g=d[k+1],b=d[k+2],y=Math.round(.2126*r+.7152*g+.0722*b);
+ document.querySelector('#px').textContent=sx;document.querySelector('#py').textContent=sy;document.querySelector('#rv').textContent=r;document.querySelector('#gv').textContent=g;document.querySelector('#bv').textContent=b;document.querySelector('#lum').textContent=y;
+ hist.push(y);if(hist.length>240)hist.shift();drawScope();rows.push([new Date().toISOString(),sx,sy,r,g,b,y]);if(rows.length>20000)rows.splice(1,1000);
+}
+document.querySelector('#csv').onclick=()=>{
+ let csv=rows.map(r=>r.join(',')).join('\n'), blob=new Blob([csv],{type:'text/csv'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='sensor_scope_'+Date.now()+'.csv';a.click();URL.revokeObjectURL(a.href);
+};
+loop();
+</script>
+</body></html>
